@@ -30,6 +30,21 @@
 - Policy:
   - Certain formats and usages are whitelisted for external textures, and validation errors are clear when constraints are violated.
 
+## Deltas vs wgpu (initial)
+
+- External texture support:
+  - WebKit:
+    - Has a fully specified external texture path, integrated with the browser’s media stack (pixel formats, color spaces, synchronization).
+  - wgpu:
+    - Only has minimal, API-level external texture concepts; the Metal backend does not yet have platform-specific external texture behavior comparable to WebKit’s.
+
+- Validation and constraints:
+  - WebKit:
+    - Validates format, dimension, mip levels, and sample count against a well-defined whitelist for external textures.
+    - Provides clear error messages when constraints are violated.
+  - wgpu:
+    - Does not yet enforce a Metal-specific external texture policy; most of this space is open for design.
+
 ## Known issues / open questions
 
 - Applicability to native wgpu:

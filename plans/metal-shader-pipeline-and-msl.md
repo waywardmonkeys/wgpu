@@ -74,12 +74,17 @@
     - Builds internal WGSL IR and tracks usage of various builtins and language features (e.g. workgroup uniform loads, external textures, math operations).
   - Generation:
     - `ShaderModule.mm`:
-      - Extracts WGSL code and compilation hints from `WGPUShaderModuleDescriptor`.
-      - Converts WebGPU `PipelineLayout` hints into WGSL `PipelineLayout` hints for early compilation.
-      - Calls `WGSL::prepare` with pipeline layout hints to perform layout-aware preparation and reflection.
-      - Calls `WGSL::generate` to produce MSL source, providing:
-        - `WGSL::DeviceState` with `appleGPUFamily` and `shaderValidationEnabled`.
-      - Collects reflection info (`entryPoints`, `entryPointInformation`) for later use by pipelines.
+      - Extracts WGSL code and compilation hints (`WGPUShaderModuleCompilationHint`) from `WGPUShaderModuleDescriptor`.
+      - Converts each hinted WebGPU `PipelineLayout` into a WGSL-side `PipelineLayout` via `ShaderModule::convertPipelineLayout`.
+      - Calls `WGSL::prepare(shaderModule, wgslHints)`:
+        - Produces a `WGSL::PrepareResult` containing per-entry-point reflection data (`entryPoints`) and verified layout information.
+      - Calls `WGSL::generate(shaderModule, prepareResult, constantValues, WGSL::DeviceState { … })`:
+        - Generates MSL source customized for:
+          - The target Apple GPU family (`appleGPUFamily`).
+          - Whether shader validation is enabled.
+        - Applies pipeline layout hints so the generated MSL already “knows” about resource layouts.
+      - Collects reflection info (`entryPoints`, `entryPointInformation`) alongside the compiled `MTLLibrary` for later use by pipelines.
+      - In `earlyCompileShaderModule`, may precompile a `ShaderModule` eagerly when hints are supplied, to reduce later pipeline creation latency.
   - Metal compilation:
     - `ShaderModule::createLibrary`:
       - Configures `MTLCompileOptions` with:
@@ -89,6 +94,57 @@
         - `preserveInvariance` when requested by `DeviceState`.
       - Calls `newLibraryWithSource` and wraps errors with a WebGPU-specific NSError domain and a message including the MSL source.
     - Stores the resulting `MTLLibrary` per `ShaderModule`, with per-entry-point reflection state (fragment outputs, inputs, usage flags).
+  - Reflection and entry-point analysis:
+    - `ShaderModule`:
+      - Parses vertex shader return types and input structs (`parseVertexReturnType`, `parseStageIn`) to:
+        - Map WGSL types and `@location` attributes to `MTLDataType` and `WGPUVertexFormat` values.
+        - Track interpolation qualifiers and builtins (e.g. `@builtin(position)`, `@builtin(front_facing)`).
+      - Parses fragment outputs and inputs (`parseFragmentReturnType`, `parseFragmentInputs`) to build:
+        - `FragmentOutputs` (location → data type, interpolation).
+        - `FragmentInputs` (location → vertex-output mapping).
+      - Records per-entry-point usage flags in `ShaderModuleState`:
+        - Whether the shader uses `sample_index`, `sample_mask`, `front_facing`, `frag_depth`, etc.
+      - Exposes helpers like `usesFrontFacingInInput`, `usesSampleIndexInInput`, `usesSampleMaskInInput`, `usesSampleMaskInOutput`, `usesFragDepth` to drive pipeline configuration.
+    - Render and compute pipelines (`RenderPipeline.mm`, `ComputePipeline.mm`) use this reflection to:
+      - Configure Metal vertex descriptors and color/depth attachment formats correctly.
+      - Decide when additional state (e.g. sample mask, depth writes, builtins) must be enabled or validated.
+
+## Deltas vs wgpu (initial)
+
+- Front-end and IR:
+  - WebKit:
+    - Uses a dedicated WGSL front-end and IR tuned to Metal, with explicit knowledge of Apple GPU families and WGSL feature usage.
+    - Performs layout-aware `WGSL::prepare` with pipeline layout hints before generating MSL.
+  - wgpu:
+    - Uses Naga as a backend-agnostic WGSL front-end/IR shared across all backends.
+    - Applies layout information later via Naga’s `EntryPointResourceMap`, not at WGSL→MSL generation time.
+
+- Pipeline layout hints and specialization:
+  - WebKit:
+    - Accepts `WGPUShaderModuleCompilationHint`s tying entry points to `PipelineLayout`s.
+    - Uses these hints to specialize generation and optionally precompile (`earlyCompileShaderModule`) shader modules ahead of pipeline creation.
+  - wgpu:
+    - Has no equivalent hint mechanism today; specialization is primarily driven at pipeline creation time.
+
+- Reflection and pipeline construction:
+  - WebKit:
+    - Builds detailed reflection info in `ShaderModule` (vertex inputs/outputs, fragment inputs/outputs, builtin usage).
+    - Pipelines consult this reflection to configure Metal vertex descriptors, attachment formats, and state tied to builtins (e.g. `frag_depth`, `sample_mask`).
+  - wgpu:
+    - Uses Naga’s reflection and wgpu-core’s descriptors, but:
+      - Metal-specific reflection (e.g. interpolation details, some builtins) is less visible as a single, cohesive layer.
+
+- Math mode and precision:
+  - WebKit:
+    - Controls math behavior via `MTLCompileOptions` (`mathMode`, `mathFloatingPointFunctions`) and user defaults, including a “safe math” mode.
+  - wgpu:
+    - Relies on Metal’s default fast math behavior; there is no user-facing way to request safer math on Metal.
+
+- Error reporting:
+  - WebKit:
+    - Wraps Metal compile errors with a WebGPU-specific error domain and includes the generated MSL in the error message.
+  - wgpu:
+    - Logs the generated MSL but typically returns a shorter error string to the caller.
 
 ## Known issues / open questions
 
@@ -117,6 +173,7 @@
   - Cross-check against WebGPU CTS failures on Metal to see if differences explain known bugs.
 - Consider pipeline layout hints:
   - Explore a mechanism for passing pipeline layout information into Naga’s MSL backend earlier, similar to WebKit’s use of WGSL pipeline layout hints, to reduce specialization overhead or improve error messages.
+  - Investigate whether a subset of WebKit’s `WGPUShaderModuleCompilationHint` model can be mapped onto wgpu’s `PipelineLayout`/`ShaderModule` interfaces without affecting non-Metal backends.
 - Math and invariance settings:
   - Short term (with current `metal` crate):
     - Add a backend-local configuration (e.g., env var or device feature flag) that controls `CompileOptions::set_fast_math_enabled`, allowing opt-in “safer math” for debugging and correctness-sensitive workloads.

@@ -56,6 +56,28 @@
   - `CommandBuffer.mm`:
     - Wraps `MTLCommandBuffer` and ensures proper submission, error propagation, and mapping to WebGPU `GPUCommandBuffer` semantics.
 
+## Deltas vs wgpu (initial)
+
+- Command buffer accounting:
+  - WebKit:
+    - Tracks created-but-not-committed command buffers in `m_createdNotCommittedBuffers` and enforces a maximum outstanding count.
+    - Actively cleans up and invalidates the queue when limits are exceeded or when the device is lost.
+  - wgpu:
+    - Uses a fixed `MAX_COMMAND_BUFFERS` per `MTLCommandQueue` but does not mirror WebKit’s explicit bookkeeping and device-loss signaling.
+
+- Queue-level blit encoder usage:
+  - WebKit:
+    - Maintains a shared queue-level blit encoder for copies (`ensureBlitCommandEncoder`, `finalizeBlitCommandEncoder`), and ensures it is properly ended/committed in work-done callbacks.
+  - wgpu:
+    - Manages encoders within `CommandEncoder` but does not have an equivalent queue-level abstraction; some patterns might be worth borrowing for robustness and efficiency.
+
+- Encoder lifecycle and state checks:
+  - WebKit:
+    - Validates encoder state before use (e.g., ensures encoders are not used after command buffer commit).
+    - Centralizes encoder ending/removal in `CommandEncoder::discardCommandBuffer` and `CommandEncoder::endEncoding`, ensuring queue bookkeeping stays consistent.
+  - wgpu:
+    - Keeps less detailed state in the Metal command encoder; there may be edge cases where state transitions are less strictly enforced.
+
 ## Known issues / open questions
 
 - Outstanding command buffers:

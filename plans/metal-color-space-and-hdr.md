@@ -40,6 +40,28 @@
     - Compositing alpha mode.
   - This is designed to match browser expectations for canvas, CSS color spaces, and HDR displays.
 
+## Deltas vs wgpu (initial)
+
+- Color space modeling:
+  - WebKit:
+    - Treats color space as a first-class part of the swap chain descriptor (`colorSpace`).
+    - Validates formats and view formats against color space and enabled features (e.g. BGRA8UnormStorage).
+  - wgpu:
+    - Currently treats color space implicitly through format choice and present mode; explicit color space selection is not surfaced in the Metal backend.
+
+- HDR and tone mapping:
+  - WebKit:
+    - Supports HDR workflows (e.g. RGBA16Float) with an explicit `toneMappingMode`.
+    - Uses luminance clamp textures when necessary to implement standard tone mapping.
+  - wgpu:
+    - Exposes HDR-capable formats (like RGBA16Float) in surface capabilities but does not deeply model tone mapping behavior or provide HDR-specific configuration knobs.
+
+- Alpha/compositing behavior:
+  - WebKit:
+    - Incorporates `compositeAlphaMode` into swap chain configuration, aligning with how canvases are composited into the browser UI.
+  - wgpu:
+    - Metal backend does not yet expose fine-grained composite alpha choices for surfaces.
+
 ## Known issues / open questions
 
 - Mapping to native apps:

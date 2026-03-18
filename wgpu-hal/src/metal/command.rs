@@ -1,3 +1,4 @@
+use arrayvec::ArrayVec;
 use objc2::{
     rc::{autoreleasepool, Retained},
     runtime::ProtocolObject,
@@ -24,7 +25,6 @@ use alloc::{
     vec::Vec,
 };
 use core::{ops::Range, ptr::NonNull, sync::atomic};
-use smallvec::SmallVec;
 
 // has to match `Temp::binding_sizes`
 const WORD_SIZE: usize = 4;
@@ -1016,29 +1016,25 @@ impl crate::CommandEncoder for super::CommandEncoder {
             // However, when I don't set this, I get undefined behavior in nonzero layers, and all non-apple examples of vertex amplification set it.
             // So this is just one of those undocumented requirements.
             if let Some(mv) = desc.multiview_mask {
-                descriptor.setRenderTargetArrayLength(32 - mv.leading_zeros() as usize);
+                descriptor.setRenderTargetArrayLength((u32::BITS - mv.leading_zeros()) as usize);
             }
             let raw = self.raw_cmd_buf.as_ref().unwrap();
             let encoder = raw.renderCommandEncoderWithDescriptor(&descriptor).unwrap();
             if let Some(mv) = desc.multiview_mask {
                 // Most likely the API just wasn't thought about enough. It's not like they ever allow you
                 // to use enough views to overflow a 32-bit bitmask.
-                let mv = mv.get();
-                let msb = 32 - mv.leading_zeros();
-                let mut maps: SmallVec<[MTLVertexAmplificationViewMapping; 32]> = SmallVec::new();
-                for i in 0..msb {
-                    if (mv & (1 << i)) != 0 {
-                        maps.push(MTLVertexAmplificationViewMapping {
-                            renderTargetArrayIndexOffset: i,
-                            viewportArrayIndexOffset: i,
-                        });
-                    }
+                let mut views = mv.get();
+                let mut maps = ArrayVec::<MTLVertexAmplificationViewMapping, 32>::new();
+                while views != 0 {
+                    let view = views.trailing_zeros();
+                    maps.push(MTLVertexAmplificationViewMapping {
+                        renderTargetArrayIndexOffset: view,
+                        viewportArrayIndexOffset: view,
+                    });
+                    views &= views - 1;
                 }
                 unsafe {
-                    encoder.setVertexAmplificationCount_viewMappings(
-                        mv.count_ones() as usize,
-                        maps.as_ptr(),
-                    )
+                    encoder.setVertexAmplificationCount_viewMappings(maps.len(), maps.as_ptr())
                 };
             }
             if let Some(label) = desc.label {
